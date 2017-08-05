@@ -155,11 +155,14 @@ void inputSense::reset()
 }
 
 void inputSense::setSystemStatusCode(int code)
+{
   this->systemStatusCode = code;
-
+}
 
 int inputSense::getSystemStatusCode()
+{
   return this->systemStatusCode;
+}
 
 void setup() 
 {
@@ -169,7 +172,7 @@ void setup()
   pinMode(volShiftDownPin,INPUT);
   pinMode(carraigeReturnSense,INPUT);
   lcd.begin(20, 4);
-//  Serial.begin(9600);
+  Serial.begin(9600);
 }
 
 inputSense start;

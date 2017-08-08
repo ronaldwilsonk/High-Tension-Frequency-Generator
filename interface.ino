@@ -15,6 +15,7 @@
  * void LCD_init(int mode): Mode 0 prints startup screen
  *                          Mode 1 prints system running warning message
  *                          Mode 2 prints ending screen
+ *                          Mode 3 invalid inputs given
  * void LCD_setValue(float f, int v): Rewrites new voltage and frequency values to screen 
  * 
  * Class inputSense
@@ -31,6 +32,11 @@
  * int dispValues(int mode): Returns current voltage and frequency values
  *                           Mode 0: Frequency
  *                           Mode 1: Voltage
+ * void writeToSerial() : Writes encoded frequency and voltage to serial. 
+ *                        Encoding: 1 -> 250V   2->500V         
+ *                                  1 -> 0.5Hz  2->1Hz
+ * void readFromSerial(): Updates real time frequency and voltage parameters on screen
+ *                        Encoding: 
  */
 
 const int freqShiftUpPin=A0;
@@ -105,6 +111,8 @@ class inputSense
   void setSystemStatusCode(int code);
   int getSystemStatusCode();
   float dispValues(int mode);
+  void writeToSerial();
+  void readFromSerial();
   void reset();
 };
 
@@ -159,20 +167,36 @@ void inputSense::setSystemStatusCode(int code)
   this->systemStatusCode = code;
 }
 
-int inputSense::getSystemStatusCode()
+
+int inputSense::getSystemStatusCode() 
 {
   return this->systemStatusCode;
 }
 
+void inputSense::writeToSerial()
+{
+  Serial.write(int(this->freqLevel*2));
+  Serial.write(int(this->voltageLevel/250));
+  Serial.write('e');
+}
+
+void inputSense::readFromSerial()
+{
+  byte buf[2];
+  while(int(buf[0])==0)
+     Serial.readBytesUntil('e',buf,2);
+  this->freqLevel=buf[0]+buf[1]/10;
+}
+
 void setup() 
 {
+  Serial.begin(9600);
   pinMode(freqShiftUpPin,INPUT);
   pinMode(freqShiftDownPin,INPUT);
   pinMode(volShiftUpPin,INPUT);
   pinMode(volShiftDownPin,INPUT);
   pinMode(carraigeReturnSense,INPUT);
   lcd.begin(20, 4);
-  Serial.begin(9600);
 }
 
 inputSense start;
@@ -181,8 +205,9 @@ void loop()
 {
   bool flag=false;
   LCD_init(start.getSystemStatusCode());
+  if(start.getSystemStatusCode()==1)
+    start.readFromSerial();
   LCD_setValue(start.dispValues(0),start.dispValues(1));
-  
   while(flag==false)
   {
     if(analogRead(freqShiftUpPin)>1000) 
@@ -231,7 +256,10 @@ void loop()
             if(start.dispValues(0)==0 || start.dispValues(1)==0)
               start.setSystemStatusCode(3);
             else
+            {
               start.setSystemStatusCode(1);
+              start.writeToSerial();
+            }
             timer_trip = true;     
           }
         }  

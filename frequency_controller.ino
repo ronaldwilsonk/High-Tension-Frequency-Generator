@@ -2,15 +2,16 @@
  * This section of the code maintains a particular RPM on the generator. This in turn produces a fixed frequency on the output signal
  */
 
-float readTargetFrequency();                                //reads target frequency from serial bus 
-
 #include<math.h>                                            //for isnan()
 
 // Pin Maps
-const int directionControlPin=8;                            // Controls direction of rotation for stepper HIGH->Clockwise LOW->Anti-Clockwise
-const int stepperStepPin=9;                                 // Step pulses makes the motor turn HIGH->LOW transition for step
-const int stopSensePin=7;                                   // HIGH->initializes the stepper to startPoint. LOW->resets stepper motor to zero 
-const int encoderReadInPin=10;                              // Encoder read in for Motor             
+const int directionControlPin=9;                            // Controls direction of rotation for stepper HIGH->Clockwise LOW->Anti-Clockwise
+const int stepperStepPin=8;                                 // Step pulses makes the motor turn HIGH->LOW transition for step
+const int stopSensePin=7;                                   // HIGH->initializes the stepper to startPoint. LOW->resets stepper motor to zero
+/*
+ * stopSense needs to be mapped
+ */
+const int encoderReadInPin=11;                              // Encoder read in for Motor             
 
 void setup() 
 {
@@ -21,41 +22,47 @@ void setup()
  Serial.begin(9600);
 }
 
-struct controllerGains
-{
-  float pGain=0,iGain=0,dGain=0;                              //Differential gain is not used
-}PID1;
-
 class stepperCustom                                           // Only effective for Motor2 (as of Built 1.0)  
 {
   private:
   int current_position=0;                                                // Keeps track of current position of servo
-  const int startPoint=144;
+  const int startPoint=100;
   public:
   int readCurrentPosition(); 
   void startupM();                                            // Initializes stepper motor to starting position (startPoint)
-  void shutdownM();                                           // Resets stepper to zero position
-  void pid(int rpm, double readOut);                          // Maintains control using PID w.r.t encoder 
+  void shutdownM();                                           // Resets stepper to zero position 
   void stepForward(int n);                                    // Steps forward for 'n' steps
   void stepBackward(int n);                                   // Steps backward for 'n' steps
+  int readFromSerial();                                       // Reads input RPM from serial
+  bool controller(int rpm, double readOut);                   // Maintains control of motor RPM w.r.t encoder
+};
+
+class encoder                           
+{
+  private:
+  double RPM; 
+  public:
+  double readEncoder();                       // Reads current value from both encoders
+  void writeToSerial();
 };
 
 int stepperCustom::readCurrentPosition()
 {
   return this->current_position;
 }
+
 void stepperCustom::startupM()
 {
-    Serial.println("Motor Starting");
+//    Serial.println("Motor Starting");
     digitalWrite(directionControlPin,HIGH);
     digitalWrite(stepperStepPin,HIGH);
     while(this->current_position<=startPoint)
     {
-      digitalWrite(stepperStepPin,LOW);
-      delay(5);
       digitalWrite(stepperStepPin,HIGH);
       delay(5);
-      Serial.println(this->current_position);
+      digitalWrite(stepperStepPin,LOW);
+      delay(5);
+//      Serial.println(this->current_position);
       this->current_position+=1;
     }
     delay(5);
@@ -63,16 +70,16 @@ void stepperCustom::startupM()
 
 void stepperCustom::shutdownM()
 {
-    Serial.println("Motor Shutdown");
+//    Serial.println("Motor Shutdown");
     digitalWrite(directionControlPin,LOW);
     digitalWrite(stepperStepPin,HIGH);
     while(this->current_position>0)
     {
-      digitalWrite(stepperStepPin,LOW);
-      delay(5);
       digitalWrite(stepperStepPin,HIGH);
       delay(5);
-      Serial.println(this->current_position);
+      digitalWrite(stepperStepPin,LOW);
+      delay(5);
+//      Serial.println(this->current_position);
       this->current_position-=1;
     }
     delay(5);
@@ -81,7 +88,7 @@ void stepperCustom::shutdownM()
 
 void stepperCustom::stepForward(int steps)
 {
-    Serial.println("FWD");
+//    Serial.println("FWD");
     digitalWrite(directionControlPin,HIGH);
     for(int i=0;i<=steps;i++)
     {
@@ -89,7 +96,7 @@ void stepperCustom::stepForward(int steps)
       delay(20);
       digitalWrite(stepperStepPin,LOW);
       delay(20);
-      Serial.println(this->current_position);
+//      Serial.println(this->current_position);
       this->current_position+=1;
     }
     delay(20);
@@ -97,7 +104,7 @@ void stepperCustom::stepForward(int steps)
 
 void stepperCustom::stepBackward(int steps)
 {
-  Serial.println("BWD");
+//  Serial.println("BWD");
   digitalWrite(directionControlPin,LOW);
   for(int i=0;i<=steps;i++)
   {
@@ -105,86 +112,117 @@ void stepperCustom::stepBackward(int steps)
     delay(20);
     digitalWrite(stepperStepPin,LOW);
     delay(20);
-    Serial.println(this->current_position);
+//    Serial.println(this->current_position);
     this->current_position-=1;
   }
   delay(20);
 }
 
-void stepperCustom::pid(int rpm, double readOut)
+bool stepperCustom::controller(int rpm, double readOut)
 {
-  float error=rpm-readOut;
-  PID1.iGain+=error/500;                
-  PID1.pGain=error/200;
-  int input=PID1.pGain+PID1.iGain;
+  int error=rpm-readOut, steps=0;
+  int delta=30;                                               //minimum error range. Stops PID controller if error is within delta
+  if(abs(error)<=150)                                         //control singal limited to promote slower convergence
+    steps=1;
+  else
+    steps=2;
   
-  if(error>0)
-    this->stepForward(input);
-  else if(error<0)
-    this->stepBackward(input);
+  if(error>delta)
+  {
+    this->stepForward(steps);
+    delay(50);
+    return true; 
+  }
+  else if(error<(-delta))
+  {
+    this->stepBackward(steps);
+    delay(50);
+    return true;
+  }
+  else
+  {
+    delay(1);
+    return false;
+  }
 }
 
-class encoder                           
+int stepperCustom::readFromSerial()
 {
-  public:
+ byte buf[2];
+ while(int(buf[0])==0)
+    Serial.readBytesUntil('e',buf,2);
+ return 30*(int)buf[0];
+}
+
+void encoder::writeToSerial()
+{
+  double RPM=this->RPM/60;                       //Convert RPM to Hz
+  int buf[3];
+  buf[2] = RPM - (int)RPM;
+  RPM=(RPM-buf[2])/10;
+  buf[1] = RPM - (int)RPM;
+  buf[0]=RPM-buf[1];
+  Serial.write(buf[0]);
+  Serial.write(buf[1]);
+  Serial.write(buf[2]);
+  Serial.write("e");
+}
+
+double encoder::readEncoder()
+{
+  double duration, total_duration;
   long pulse_current_position;
-  double RPM=0, duration, total_duration;
-  double denoiser(double rpm);              // Clears random noise fluctuations introduced by device. Linear and deterministic in nature
-  void readEncoder(encoder& rpmM1);         // Reads current value from both encoders
-};
-
-double encoder::denoiser(double rpm) 
-{
-  return 81.7*(0.009144*rpm+26.08)-2078;
-}
-
-void encoder::readEncoder(encoder& M1)
-{
   bool flag=true;
+  long start_time=millis();
+  
   while(flag==true)
   {
-    if(M1.total_duration>0.0005)
-       flag=false;
-    M1.duration = pulseIn(encoderReadInPin, HIGH);
-    if(M1.duration!=0)
+    if((millis()-start_time)>500)
     {
-      M1.total_duration+=(M1.duration*0.000001);
-      M1.pulse_current_position+=1;
+      flag=false;
+      this->RPM=0;  
+    }
+    else if(total_duration>0.0005)
+       flag=false;
+       
+    duration=pulseIn(encoderReadInPin, HIGH);
+    if(duration!=0)
+    {
+      total_duration+=(duration*0.000001);
+      pulse_current_position+=1;
     }
   }
-  
-  M1.RPM=(M1.RPM+((M1.pulse_current_position/M1.total_duration)))/2;
-
-  Serial.println("M1 RPM: ");
-  Serial.println(M1.RPM);
-  Serial.println(M1.denoiser(M1.RPM));
-  Serial.println(" ");
-  delay(1);         
+  this->RPM=(this->RPM+((pulse_current_position/total_duration)))/2;
+//  Serial.println("RPM: ");
+//  Serial.println(this->RPM);
+//  Serial.println(" ");
+  delay(1);
+  if(flag==false)
+    {
+      this->writeToSerial();
+      return this->RPM;         
+    }
 }
 
-stepperCustom M3;                                                      //M3->Motor 3: refers to stepper motor
-encoder M1;                                                         //M1->Motor 1, M2->Motor 2, high speed motor. Refer build 1.0 documentation
+stepperCustom stepper;                                                      
+encoder motor;                                                         
     
 void loop()                                                              //main() starts here
 {
-  if((M3.readCurrentPosition()==0)&&(digitalRead(stopSensePin)==HIGH))
+  int inputRPM=stepper.readFromSerial();
+  
+  if((stepper.readCurrentPosition()==0)&&(digitalRead(stopSensePin)==HIGH))
   {
-    M3.startupM();
-    delay(250);
+    stepper.startupM();
+    delay(20);
   }
    
-  if((M3.readCurrentPosition()>0)&&(digitalRead(stopSensePin)==HIGH))
+  if((stepper.readCurrentPosition()>0)&&(digitalRead(stopSensePin)==HIGH))
   {
-    M3.stepForward(50);
-    delay(20);
-    M3.stepBackward(50);
+    stepper.controller(inputRPM, motor.readEncoder());
+    delay(50); 
   }
   
-  if((M3.readCurrentPosition()>0)&&(digitalRead(stopSensePin)==LOW))
-     M3.shutdownM();
-}
-
-float readTargetFrequency()
-{
-  int n;
+  if((stepper.readCurrentPosition()>0)&&(digitalRead(stopSensePin)==LOW))
+     stepper.shutdownM();
 }
